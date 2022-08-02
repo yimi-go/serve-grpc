@@ -1,0 +1,11 @@
+version: v1
+#build:
+#  excludes:
+breaking:
+  use:
+    - FILE
+#deps:
+#  - buf.build/googleapis/googleapis:61dea4c7129940a2aac61f35386b960c
+lint:
+  use:
+    - DEFAULT

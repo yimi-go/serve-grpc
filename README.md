@@ -4,7 +4,7 @@ serve-grpc
 
 * gRPC server runner
 * gPRC server interceptors
-  * [ ] Recover
+  * [x] Recover
   * [ ] Logging
   * [ ] Authentication by JWT
   * [ ] Metrics

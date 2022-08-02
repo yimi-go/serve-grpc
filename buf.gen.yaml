@@ -1,0 +1,10 @@
+version: v1
+plugins:
+  - name: go
+    out: .
+    opt:
+      - module=github.com/yimi-go/serve-grpc
+  - name: go-grpc
+    out: .
+    opt:
+      - module=github.com/yimi-go/serve-grpc

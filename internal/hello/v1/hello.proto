@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+package internal.hello.v1;
+
+option go_package = "github.com/yimi-go/serve-grpc/internal/hello;hello";
+
+// The greeting service definition.
+service GreeterService {
+  // Sends a greeting
+  rpc SayHello (SayHelloRequest) returns (SayHelloResponse)  {
+  }
+  // Response greetings
+  rpc ServerGreets (ServerGreetsRequest) returns (stream ServerGreetsResponse) {
+  }
+}
+
+// The request message containing the user's name.
+message SayHelloRequest {
+  string name = 1;
+}
+
+// The response message containing the greetings
+message SayHelloResponse {
+  string message = 1;
+}
+
+message ServerGreetsRequest {
+  string name = 1;
+}
+
+message ServerGreetsResponse {
+  string message = 1;
+}

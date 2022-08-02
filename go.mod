@@ -3,6 +3,7 @@ module github.com/yimi-go/serve-grpc
 go 1.18
 
 require (
+	github.com/golang-jwt/jwt/v4 v4.4.2
 	github.com/pkg/errors v0.9.1
 	github.com/stretchr/testify v1.8.0
 	github.com/yimi-go/errors v0.0.1

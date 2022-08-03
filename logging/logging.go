@@ -56,11 +56,10 @@ func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
 				logging.Any("resp", resp),
 			)
 		} else {
-			xerr := errors.FromError(err)
-			gs := xerr.GRPCStatus()
+			se := errors.FromError(err)
 			logger.Infow("fail handling request",
-				logging.String("code", gs.Code().String()),
-				logging.String("reason", xerr.Reason),
+				logging.String("code", se.GRPCStatus().Code().String()),
+				logging.String("reason", se.Reason),
 				logging.Duration("cost", Since(start)),
 				logging.Error(err),
 			)
@@ -129,11 +128,10 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 				logging.Duration("cost", Since(start)),
 			)
 		} else {
-			xerr := errors.FromError(err)
-			gs := xerr.GRPCStatus()
+			se := errors.FromError(err)
 			logger.Infow("error streaming",
-				logging.String("code", gs.Code().String()),
-				logging.String("reason", xerr.Reason),
+				logging.String("code", se.GRPCStatus().Code().String()),
+				logging.String("reason", se.Reason),
 				logging.Duration("cost", Since(start)),
 				logging.Error(err),
 			)

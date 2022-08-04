@@ -17,7 +17,7 @@ serve-grpc
         * [ ] APF
             * 参考 K8s APF。进行主动限流
             * 用于阻止"坏用户"
-    * [ ] Tracing
+    * [x] Tracing
     * [ ] Validate
         * [ ] Basic 基于数据规则的校验
         * [ ] Contextual or Business 基于请求上下文业务数据要求的校验

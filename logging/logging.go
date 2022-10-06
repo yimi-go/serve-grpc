@@ -112,7 +112,8 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 		srv any,
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
-		handler grpc.StreamHandler) error {
+		handler grpc.StreamHandler,
+	) error {
 		start := Now()
 		logger := logging.GetFactory().Logger(opt.logName)
 		logger = logging.WithContextField(ss.Context(), logger)

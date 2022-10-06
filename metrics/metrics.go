@@ -54,15 +54,16 @@ type Option func(mw *metricsWrapper)
 
 // WithRequestCounter returns an Option that configures request counter.
 // We suggest these labels are set before passing the counter to this function:
-//   app_id: domain.biz.module
-//   env: prd/uat/fat/dev
-//   region: regionId. optional
-//   zone: zoneId. optional
-//   cluster: clusterId. optional
-//   host: hostname
-//   addr: ip:port
-//   transport: grpc
-//   actor: server
+//
+//	app_id: domain.biz.module
+//	env: prd/uat/fat/dev
+//	region: regionId. optional
+//	zone: zoneId. optional
+//	cluster: clusterId. optional
+//	host: hostname
+//	addr: ip:port
+//	transport: grpc
+//	actor: server
 func WithRequestCounter(m metrics.Counter) Option {
 	return func(mw *metricsWrapper) {
 		mw.requestCounter = m
@@ -71,15 +72,16 @@ func WithRequestCounter(m metrics.Counter) Option {
 
 // WithDurationObserver returns an Option that configures request handling duration observer.
 // We suggest these labels are set before passing the observer to this function:
-//   app_id: domain.biz.module
-//   env: prd/uat/fat/dev
-//   region: regionId. optional
-//   zone: zoneId. optional
-//   cluster: clusterId. optional
-//   host: hostname
-//   addr: ip:port
-//   transport: grpc
-//   actor: server
+//
+//	app_id: domain.biz.module
+//	env: prd/uat/fat/dev
+//	region: regionId. optional
+//	zone: zoneId. optional
+//	cluster: clusterId. optional
+//	host: hostname
+//	addr: ip:port
+//	transport: grpc
+//	actor: server
 func WithDurationObserver(m metrics.Observer) Option {
 	return func(mw *metricsWrapper) {
 		mw.requestDuration = m
@@ -88,15 +90,16 @@ func WithDurationObserver(m metrics.Observer) Option {
 
 // WithInflightGauge returns an Option that configures inflight request count gauge.
 // We suggest these labels are set before passing the gauge to this function:
-//   app_id: domain.biz.module
-//   env: prd/uat/fat/dev
-//   region: regionId. optional
-//   zone: zoneId. optional
-//   cluster: clusterId. optional
-//   host: hostname
-//   addr: ip:port
-//   transport: grpc
-//   actor: server
+//
+//	app_id: domain.biz.module
+//	env: prd/uat/fat/dev
+//	region: regionId. optional
+//	zone: zoneId. optional
+//	cluster: clusterId. optional
+//	host: hostname
+//	addr: ip:port
+//	transport: grpc
+//	actor: server
 func WithInflightGauge(m metrics.Gauge) Option {
 	return func(mw *metricsWrapper) {
 		mw.inflightRequests = m
@@ -159,7 +162,8 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 		srv any,
 		ss grpc.ServerStream,
 		info *grpc.StreamServerInfo,
-		handler grpc.StreamHandler) error {
+		handler grpc.StreamHandler,
+	) error {
 		startTime := Now()
 		method, api := "stream", info.FullMethod
 		if mw.inflightRequests != nil {

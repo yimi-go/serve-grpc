@@ -12,9 +12,9 @@ serve-grpc
     * [x] Metrics
     * [x] Rate Limit
     * [x] Tracing
-    * [ ] Validate
-        * [ ] Basic 基于数据规则的校验
-        * [ ] Contextual or Business 基于请求上下文业务数据要求的校验
+    * [x] Validate
+        * [x] Basic 基于数据规则的校验
+        * [x] Contextual or Business 基于请求上下文业务数据要求的校验
     * [ ] Metadata propagation
       请求元数据传递，从收到的请求中提取，在之后处理中携带，并在需要请求下一依赖服务时附加。
   > 建议注册顺序（执行顺序）：

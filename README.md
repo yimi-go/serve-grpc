@@ -10,13 +10,7 @@ serve-grpc
       > Note: 只是认证，没有鉴权。即使 JWT 合法，可能请求也没有权限操作。
       > 鉴权逻辑与业务相关应由业务方实现。
     * [x] Metrics
-    * [ ] Rate Limit
-        * [ ] BBR
-            * 被动限流
-            * 用于服务端自保
-        * [ ] APF
-            * 参考 K8s APF。进行主动限流
-            * 用于阻止"坏用户"
+    * [x] Rate Limit
     * [x] Tracing
     * [ ] Validate
         * [ ] Basic 基于数据规则的校验

@@ -15,8 +15,6 @@ serve-grpc
     * [x] Validate
         * [x] Basic 基于数据规则的校验
         * [x] Contextual or Business 基于请求上下文业务数据要求的校验
-    * [ ] Metadata propagation
-      请求元数据传递，从收到的请求中提取，在之后处理中携带，并在需要请求下一依赖服务时附加。
   > 建议注册顺序（执行顺序）：
   > * Tracing: Logging 和 Metrics 要用到
   > * Logging：必须在 Recover 外层，防止 panic 漏打日志

@@ -27,8 +27,8 @@ var (
 )
 
 type options struct {
-	signingMethod []jwt.SigningMethod
 	claims        func() jwt.Claims
+	signingMethod []jwt.SigningMethod
 }
 
 func (o *options) methods() []string {

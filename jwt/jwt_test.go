@@ -12,9 +12,9 @@ import (
 )
 
 type testClaims struct {
-	Foo string `json:"foo"`
-	jwt.RegisteredClaims
 	validFn func() error
+	jwt.RegisteredClaims
+	Foo string `json:"foo"`
 }
 
 func (t *testClaims) Valid() error {

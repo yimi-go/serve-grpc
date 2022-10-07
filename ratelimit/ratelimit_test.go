@@ -31,8 +31,8 @@ func TestIsErrLimitExceed(t *testing.T) {
 		err error
 	}
 	tests := []struct {
-		name string
 		args args
+		name string
 		want bool
 	}{
 		{
@@ -431,14 +431,14 @@ type testLimiter struct {
 	err   error
 }
 
-func (l *testLimiter) Allow(id string) (limiter.Token, error) {
+func (l *testLimiter) Allow(_ string) (limiter.Token, error) {
 	return l.token, l.err
 }
 
 type testToken struct {
+	doneErr   error
 	ready     <-chan struct{}
 	doneState limiter.State
-	doneErr   error
 }
 
 func (t *testToken) Ready() <-chan struct{} {

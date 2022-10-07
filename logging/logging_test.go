@@ -20,18 +20,18 @@ import (
 )
 
 type jsonLine struct {
+	Resp         any            `json:"resp,omitempty"`
+	Param        map[string]any `json:"param,omitempty"`
 	Level        string         `json:"level"`
 	Logger       string         `json:"logger"`
 	Ts           string         `json:"ts"`
 	Caller       string         `json:"caller"`
 	Msg          string         `json:"msg,omitempty"`
-	Param        map[string]any `json:"param,omitempty"`
 	Code         string         `json:"code,omitempty"`
-	Resp         any            `json:"resp,omitempty"`
-	Cost         int64          `json:"cost,omitempty"`
 	Reason       string         `json:"reason,omitempty"`
 	Error        string         `json:"error,omitempty"`
 	ErrorVerbose string         `json:"errorVerbose,omitempty"`
+	Cost         int64          `json:"cost,omitempty"`
 }
 
 type mockStream struct {

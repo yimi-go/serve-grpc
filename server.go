@@ -70,19 +70,17 @@ func WithOption(opts ...grpc.ServerOption) ServerOption {
 
 // Server is a gRPC server runner.
 type Server struct {
-	*grpc.Server
-	lisFn      ListenFunc
-	logName    string
-	timeout    time.Duration
-	unaryInts  []grpc.UnaryServerInterceptor
-	streamInts []grpc.StreamServerInterceptor
-	grpcOpts   []grpc.ServerOption
-	health     *health.Server
-
-	explicitTls bool
-
-	mux sync.Mutex
 	lis net.Listener
+	*grpc.Server
+	lisFn       ListenFunc
+	health      *health.Server
+	logName     string
+	unaryInts   []grpc.UnaryServerInterceptor
+	streamInts  []grpc.StreamServerInterceptor
+	grpcOpts    []grpc.ServerOption
+	timeout     time.Duration
+	mux         sync.Mutex
+	explicitTls bool
 }
 
 // NewServer creates a gRPC server by options.

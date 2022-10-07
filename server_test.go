@@ -29,14 +29,14 @@ type record struct {
 }
 
 type jsonLine struct {
+	Param     map[string]any `json:"param,omitempty"`
+	Other     map[string]any `json:"-"`
 	Transport string         `json:"transport"`
 	Actor     string         `json:"actor"`
 	Address   string         `json:"address"`
 	Method    string         `json:"method"`
 	Api       string         `json:"api"`
-	Param     map[string]any `json:"param,omitempty"`
 	Msg       string         `json:"msg"`
-	Other     map[string]any `json:"-"`
 }
 
 type mockServerStream struct {
@@ -632,9 +632,9 @@ func TestServer_streamServerInterceptor(t *testing.T) {
 	})
 	tests := []struct {
 		api          string
+		wantMethod   string
 		clientStream bool
 		serverStream bool
-		wantMethod   string
 	}{
 		{
 			api:          "imposable",

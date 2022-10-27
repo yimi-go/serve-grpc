@@ -61,12 +61,12 @@ func TestUnaryInterceptor(t *testing.T) {
 		assert.Nil(t, err)
 		assert.Equal(t, 1, handleCount)
 	})
-	t.Run("biz_validate_fail", func(t *testing.T) {
+	t.Run("server_validate_fail", func(t *testing.T) {
 		handleCount := 0
 		interceptor := UnaryInterceptor()
-		resp, err := interceptor(context.Background(), &msgBizValidator{
+		resp, err := interceptor(context.Background(), &msgServerValidator{
 			vErr:  nil,
-			bvErr: fmt.Errorf("abc"),
+			svErr: fmt.Errorf("abc"),
 		}, &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
@@ -82,9 +82,9 @@ func TestUnaryInterceptor(t *testing.T) {
 	t.Run("biz_validate_ok", func(t *testing.T) {
 		handleCount := 0
 		interceptor := UnaryInterceptor()
-		resp, err := interceptor(context.Background(), &msgBizValidator{
+		resp, err := interceptor(context.Background(), &msgServerValidator{
 			vErr:  nil,
-			bvErr: nil,
+			svErr: nil,
 		}, &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
@@ -209,9 +209,9 @@ func TestStreamInterceptor(t *testing.T) {
 			IsClientStream: false,
 			IsServerStream: true,
 		}, func(srv any, stream grpc.ServerStream) error {
-			m := &msgBizValidator{
+			m := &msgServerValidator{
 				vErr:  nil,
-				bvErr: fmt.Errorf("abc"),
+				svErr: fmt.Errorf("abc"),
 			}
 			if err := stream.RecvMsg(m); err != nil {
 				return err
@@ -236,9 +236,9 @@ func TestStreamInterceptor(t *testing.T) {
 			IsClientStream: false,
 			IsServerStream: true,
 		}, func(srv any, stream grpc.ServerStream) error {
-			m := &msgBizValidator{
+			m := &msgServerValidator{
 				vErr:  nil,
-				bvErr: nil,
+				svErr: nil,
 			}
 			if err := stream.RecvMsg(m); err != nil {
 				return err
@@ -262,17 +262,13 @@ func (m *msgValidator) Validate() error {
 	return m.vErr
 }
 
-type msgBizValidator struct {
+type msgServerValidator struct {
 	vErr  error
-	bvErr error
+	svErr error
 }
 
-func (m *msgBizValidator) Validate() error {
-	return m.vErr
-}
-
-func (m *msgBizValidator) BizValidate() error {
-	return m.bvErr
+func (m *msgServerValidator) ServerValidate(server any) error {
+	return m.svErr
 }
 
 type mockStream struct {

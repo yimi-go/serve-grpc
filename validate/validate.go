@@ -11,9 +11,8 @@ type validator interface {
 	Validate() error
 }
 
-type bizValidator interface {
-	validator
-	BizValidate() error
+type serverValidator interface {
+	ServerValidate(server any) error
 }
 
 func UnaryInterceptor() grpc.UnaryServerInterceptor {
@@ -23,19 +22,15 @@ func UnaryInterceptor() grpc.UnaryServerInterceptor {
 		info *grpc.UnaryServerInfo,
 		handler grpc.UnaryHandler,
 	) (any, error) {
-		v, ok := req.(validator)
-		if !ok {
-			return handler(ctx, req)
+		if v, ok := req.(validator); ok {
+			if err := v.Validate(); err != nil {
+				return nil, errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+			}
 		}
-		if err := v.Validate(); err != nil {
-			return nil, errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
-		}
-		v2, ok := v.(bizValidator)
-		if !ok {
-			return handler(ctx, req)
-		}
-		if err := v2.BizValidate(); err != nil {
-			return nil, errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+		if v, ok := req.(serverValidator); ok {
+			if err := v.ServerValidate(info.Server); err != nil {
+				return nil, errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+			}
 		}
 		return handler(ctx, req)
 	}
@@ -43,12 +38,13 @@ func UnaryInterceptor() grpc.UnaryServerInterceptor {
 
 func StreamInterceptor() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		return handler(srv, &wrappedStream{ss})
+		return handler(srv, &wrappedStream{ss, srv})
 	}
 }
 
 type wrappedStream struct {
 	grpc.ServerStream
+	server any
 }
 
 func (w *wrappedStream) RecvMsg(m any) error {
@@ -56,19 +52,15 @@ func (w *wrappedStream) RecvMsg(m any) error {
 	if err != nil {
 		return err
 	}
-	v, ok := m.(validator)
-	if !ok {
-		return nil
+	if v, ok := m.(validator); ok {
+		if err = v.Validate(); err != nil {
+			return errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+		}
 	}
-	if err = v.Validate(); err != nil {
-		return errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
-	}
-	v2, ok := m.(bizValidator)
-	if !ok {
-		return nil
-	}
-	if err = v2.BizValidate(); err != nil {
-		return errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+	if v, ok := m.(serverValidator); ok {
+		if err = v.ServerValidate(w.server); err != nil {
+			return errors.InvalidArgument("VALIDATE", err.Error()).WithCause(err)
+		}
 	}
 	return nil
 }

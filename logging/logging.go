@@ -15,6 +15,11 @@ var (
 	Since = time.Since
 )
 
+// LogReplacer 日志替换接口。对于特别大的消息，可以实现这个接口，提供一个日志摘要用于打日志，而不是打自己本身
+type LogReplacer interface {
+	LogReplace() any
+}
+
 // Option is logging interceptor option func.
 type Option func(o *options)
 
@@ -47,13 +52,13 @@ func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
 		start := Now()
 		logger := logging.GetFactory().Logger(opt.logName)
 		logger = logging.WithContextField(ctx, logger)
-		logger.Infow("receive request")
+		logger.Infow("receive request", logging.Any("req", msgLogging(req)))
 		resp, err = handler(ctx, req)
 		if err == nil {
 			logger.Infow("finish handling request",
 				logging.String("code", codes.OK.String()),
 				logging.Duration("cost", Since(start)),
-				logging.Any("resp", resp),
+				logging.Any("resp", msgLogging(resp)),
 			)
 		} else {
 			se := errors.FromError(err)
@@ -77,10 +82,10 @@ type wrappedStream struct {
 func (w *wrappedStream) SendMsg(m any) error {
 	err := w.ServerStream.SendMsg(m)
 	if err == nil {
-		w.logger.Infow("send msg", logging.Any("resp", m))
+		w.logger.Infow("send msg", logging.Any("resp", msgLogging(m)))
 	} else {
 		w.logger.Infow("send msg fail",
-			logging.Any("resp", m),
+			logging.Any("resp", msgLogging(m)),
 			logging.Error(err),
 		)
 	}
@@ -91,7 +96,7 @@ func (w *wrappedStream) RecvMsg(m any) error {
 	err := w.ServerStream.RecvMsg(m)
 	if err == nil {
 		param := map[string]any{
-			"req": m,
+			"req": msgLogging(m),
 		}
 		w.logger.Infow("recv msg", logging.Any("param", param))
 	} else {
@@ -139,4 +144,11 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 		}
 		return err
 	}
+}
+
+func msgLogging(m any) any {
+	if ls, ok := m.(LogReplacer); ok {
+		return ls.LogReplace()
+	}
+	return m
 }

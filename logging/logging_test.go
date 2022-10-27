@@ -605,3 +605,46 @@ func TestStreamInterceptor(t *testing.T) {
 		assert.Equal(t, 1, count)
 	})
 }
+
+type wolf struct{}
+
+func (wolf) String() string {
+	return "I'm a wolf."
+}
+
+func (wolf) LogReplace() any {
+	return sheep{}
+}
+
+type sheep struct{}
+
+func (sheep) String() string {
+	return "I'm a sheep."
+}
+
+func Test_msgLogging(t *testing.T) {
+	type args struct {
+		m any
+	}
+	tests := []struct {
+		name string
+		args args
+		want any
+	}{
+		{
+			name: "sheep",
+			args: args{m: sheep{}},
+			want: sheep{},
+		},
+		{
+			name: "wolf",
+			args: args{m: wolf{}},
+			want: sheep{},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equalf(t, tt.want, msgLogging(tt.args.m), "msgLogging(%v)", tt.args.m)
+		})
+	}
+}

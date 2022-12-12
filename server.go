@@ -21,6 +21,12 @@ type ListenFunc func() (net.Listener, error)
 // ServerOption is gRPC server option.
 type ServerOption func(s *Server)
 
+func WithRunName(name string) ServerOption {
+	return func(s *Server) {
+		s.runName = name
+	}
+}
+
 // WithLogName returns a ServerOption that sets the logger name.
 func WithLogName(name string) ServerOption {
 	return func(s *Server) {
@@ -74,6 +80,7 @@ type Server struct {
 	*grpc.Server
 	lisFn       ListenFunc
 	health      *health.Server
+	runName     string
 	logName     string
 	unaryInts   []grpc.UnaryServerInterceptor
 	streamInts  []grpc.StreamServerInterceptor
@@ -120,8 +127,11 @@ func NewServer(lisFn ListenFunc, opts ...ServerOption) *Server {
 	return srv
 }
 
-func (s *Server) Prepare(_ context.Context) error {
-	return nil
+func (s *Server) Name() string {
+	if len(s.runName) > 0 {
+		return s.runName
+	}
+	return "gRPC server"
 }
 
 func (s *Server) Run(ctx context.Context) error {

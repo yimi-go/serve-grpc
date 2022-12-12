@@ -45,8 +45,8 @@ github.com/yimi-go/metrics v0.0.1 h1:C+TNZuqbs20Z1vd7lKhkYFfYMlfNf4wD9qv7STAa9Ds
 github.com/yimi-go/metrics v0.0.1/go.mod h1:NqTx54NdLvGb48rLeYV4zMbn73kyTX70l39udrrFlCE=
 github.com/yimi-go/rate-limiter v0.0.3 h1:Z/f7sup2ry9T9NHxkYAtvE+/JpfaPIXW9bePavVMa8g=
 github.com/yimi-go/rate-limiter v0.0.3/go.mod h1:K5VVupLyZdfCp7Dq7sbv7HjyQxL8RIrXzXC7TjxMJNw=
-github.com/yimi-go/runner v0.0.1 h1:9TKFap8HXhVnHpm9tfQXyqBsQ2wBtMdkBmdFDGlj/2Q=
-github.com/yimi-go/runner v0.0.1/go.mod h1:f3d+ciG7jIDp9A2zCyHPVIKTY2gcEkt6EADiXAPPeIY=
+github.com/yimi-go/runner v0.0.3 h1:FkihSzHJWMg2FLGbV0hFb7YPrebdTgej/OhWPGy0FfY=
+github.com/yimi-go/runner v0.0.3/go.mod h1:f3d+ciG7jIDp9A2zCyHPVIKTY2gcEkt6EADiXAPPeIY=
 github.com/yimi-go/window v0.0.6 h1:Zc/MiEaJa0VvFQ3DYUTtg3hNCfI1abhx/5oLxuHPQyA=
 github.com/yimi-go/window v0.0.6/go.mod h1:F/Dnts/RxLioxQIMOD6yrHdnefFPjy0aBqfVCWa6Fos=
 github.com/yimi-go/zap-logging v0.0.2 h1:T4M300/OLyQgMdzbGwuC8ZH30nvn2VH4u7JN5sCwxLE=

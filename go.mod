@@ -11,7 +11,7 @@ require (
 	github.com/yimi-go/logging v0.0.2
 	github.com/yimi-go/metrics v0.0.1
 	github.com/yimi-go/rate-limiter v0.0.3
-	github.com/yimi-go/runner v0.0.1
+	github.com/yimi-go/runner v0.0.3
 	github.com/yimi-go/zap-logging v0.0.2
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.36.1
 	go.opentelemetry.io/otel v1.10.0

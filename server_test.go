@@ -64,6 +64,13 @@ func plainLisPort(port uint16) ListenFunc {
 	}
 }
 
+func TestWithRunName(t *testing.T) {
+	srv := &Server{}
+	v := "testRunner"
+	WithRunName(v)(srv)
+	assert.Equal(t, v, srv.runName)
+}
+
 func TestWithLogName(t *testing.T) {
 	srv := &Server{}
 	v := "test"
@@ -222,13 +229,6 @@ func TestServer_logger(t *testing.T) {
 	logger := srv.logger(context.Background())
 	if logger == nil {
 		t.Errorf("expect a logger, got nil")
-	}
-}
-
-func TestServer_Prepare(t *testing.T) {
-	srv := NewServer(plainLisFn)
-	if err := srv.Prepare(context.Background()); err != nil {
-		t.Errorf("unexpect err: %v", err)
 	}
 }
 

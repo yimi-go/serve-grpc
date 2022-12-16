@@ -2,37 +2,22 @@ package logging
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
+	"io"
 	"testing"
 	"time"
 
 	pkgerrors "github.com/pkg/errors"
 	"github.com/stretchr/testify/assert"
 	"github.com/yimi-go/errors"
-	"github.com/yimi-go/logging"
-	zapLogging "github.com/yimi-go/zap-logging"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 )
-
-type jsonLine struct {
-	Resp         any            `json:"resp,omitempty"`
-	Param        map[string]any `json:"param,omitempty"`
-	Level        string         `json:"level"`
-	Logger       string         `json:"logger"`
-	Ts           string         `json:"ts"`
-	Caller       string         `json:"caller"`
-	Msg          string         `json:"msg,omitempty"`
-	Code         string         `json:"code,omitempty"`
-	Reason       string         `json:"reason,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	ErrorVerbose string         `json:"errorVerbose,omitempty"`
-	Cost         int64          `json:"cost,omitempty"`
-}
 
 type mockStream struct {
 	header metadata.MD
@@ -65,27 +50,10 @@ func (m *mockStream) RecvMsg(msg interface{}) error {
 	return m.recvFn(msg)
 }
 
-func TestWithLogName(t *testing.T) {
-	o := &options{}
-	name := "test"
-	WithLogName(name)(o)
-	assert.Equal(t, name, o.logName)
-}
-
 func TestUnaryInterceptor(t *testing.T) {
 	t.Run("default_ok", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		originNowFn := Now
 		originSinceFn := Since
 		defer func() {
@@ -97,115 +65,80 @@ func TestUnaryInterceptor(t *testing.T) {
 		Since = func(t time.Time) time.Duration { return now.Sub(t) }
 
 		interceptor := UnaryInterceptor()
-		_, err = interceptor(context.Background(), "mockReq", &grpc.UnaryServerInfo{
+		_, err := interceptor(ctx, "mockReq", &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
 		}, func(ctx context.Context, req any) (any, error) {
 			now = now.Add(time.Second)
 			return "mockResp", nil
 		})
-		if err != nil {
-			t.Errorf("unexpected err: %v", err)
+		assert.Nilf(t, err, "unexpected err: %v", err)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("can not scan")
-		}
-		line := scanner.Bytes()
-		t.Log(string(line))
-		jl := &jsonLine{}
-		err = json.Unmarshal(line, jl)
-		if err != nil {
-			t.Errorf("unexpected err: %v", err)
-		}
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "receive request", jl.Msg)
-		if !scanner.Scan() {
-			t.Fatalf("can not scan")
-		}
-		line = scanner.Bytes()
-		t.Log(string(line))
-		jl = &jsonLine{}
-		assert.Nil(t, json.Unmarshal(line, jl))
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "finish handling request", jl.Msg)
-		assert.Equal(t, codes.OK.String(), jl.Code)
-		assert.NotNil(t, jl.Resp)
-		assert.Equal(t, int64(1000), jl.Cost)
+		logBuf.Reset()
+		assert.Len(t, mps, 2)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "receive request", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "finish handling request", mps[1]["msg"])
+		assert.Equal(t, codes.OK.String(), mps[1]["code"])
+		assert.NotNil(t, mps[1]["resp"])
+		assert.Equal(t, 1000_000_000.0, mps[1]["cost"])
 	})
 	t.Run("default_err", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		interceptor := UnaryInterceptor()
-		_, err = interceptor(context.Background(), "mockReq", &grpc.UnaryServerInfo{
+		_, err := interceptor(ctx, "mockReq", &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
 		}, func(ctx context.Context, req any) (any, error) {
 			return nil, pkgerrors.New("error")
 		})
-		if err == nil {
-			t.Errorf("expect err, got nil")
+		assert.NotNilf(t, err, "expect err, got nil")
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("can not scan")
-		}
-		t.Log(scanner.Text())
-		if !scanner.Scan() {
-			t.Fatalf("can not scan")
-		}
-		jl := &jsonLine{}
-		t.Log(scanner.Text())
-		err = json.Unmarshal(scanner.Bytes(), jl)
-		if err != nil {
-			t.Errorf("unexpected err: %v", err)
-		}
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "fail handling request", jl.Msg)
-		assert.Equal(t, codes.Unknown.String(), jl.Code)
-		assert.Equal(t, errors.UnknownReason, jl.Reason)
-		assert.Nil(t, jl.Resp)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.Error)
-		t.Log(jl.ErrorVerbose)
-	})
-	t.Run("with_option", func(t *testing.T) {
-		count := 0
-		UnaryInterceptor(func(o *options) {
-			count++
-		})
-		if count != 1 {
-			t.Errorf("want 1, got %v", count)
-		}
+		logBuf.Reset()
+		assert.Len(t, mps, 2)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "receive request", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "fail handling request", mps[1]["msg"])
+		assert.Equal(t, codes.Unknown.String(), mps[1]["code"])
+		assert.Equal(t, errors.UnknownReason, mps[1]["reason"])
+		assert.Nil(t, mps[1]["resp"])
+		assert.NotEmpty(t, mps[1]["err"])
 	})
 }
 
 func TestStreamInterceptor(t *testing.T) {
 	t.Run("default_ok", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		originNowFn := Now
 		originSinceFn := Since
 		defer func() {
@@ -218,7 +151,7 @@ func TestStreamInterceptor(t *testing.T) {
 
 		interceptor := StreamInterceptor()
 		ss := &mockStream{
-			ctx: context.Background(),
+			ctx: ctx,
 			recvFn: func(m any) error {
 				sp, ok := m.(*string)
 				if !ok {
@@ -231,7 +164,7 @@ func TestStreamInterceptor(t *testing.T) {
 				return nil
 			},
 		}
-		err = interceptor(
+		err := interceptor(
 			nil,
 			ss,
 			&grpc.StreamServerInfo{FullMethod: "testMethod"},
@@ -248,82 +181,46 @@ func TestStreamInterceptor(t *testing.T) {
 				}
 				return nil
 			})
-		if err != nil {
-			t.Fatalf("unexpect err: %v", err)
+		assert.Nilf(t, err, "unexpect err: %v", err)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes := scanner.Bytes()
-		t.Log(string(bytes))
-		jl := &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		if err != nil {
-			t.Errorf("unexpect unmarshal err: %v", err)
-		}
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "start streaming", jl.Msg)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes = scanner.Bytes()
-		t.Log(string(bytes))
-		jl = &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		if err != nil {
-			t.Errorf("unexpect unmarshal err: %v", err)
-		}
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "recv msg", jl.Msg)
-		assert.NotNil(t, jl.Param["req"])
+		logBuf.Reset()
+		assert.Len(t, mps, 5)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "start streaming", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "recv msg", mps[1]["msg"])
+		param, ok := mps[1]["param"].(map[string]any)
+		assert.True(t, ok)
+		assert.NotNil(t, param["req"])
 		for i := 0; i < 2; i++ {
-			if !scanner.Scan() {
-				t.Fatalf("want scan ok, but can not scan")
-			}
-			bytes = scanner.Bytes()
-			t.Log(string(bytes))
-			jl = &jsonLine{}
-			err = json.Unmarshal(bytes, jl)
-			if err != nil {
-				t.Errorf("unexpect unmarshal err: %v", err)
-			}
-			assert.NotEmpty(t, jl.Logger)
-			assert.Equal(t, "send msg", jl.Msg)
-			assert.NotEmpty(t, jl.Resp)
+			assert.Equal(t, slog.InfoLevel.String(), mps[2+i][slog.LevelKey])
+			assert.Equal(t, "send msg", mps[2+i]["msg"])
+			assert.NotEmpty(t, mps[2+i]["resp"])
 		}
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes = scanner.Bytes()
-		t.Log(string(bytes))
-		jl = &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		if err != nil {
-			t.Errorf("unexpect unmarshal err: %v", err)
-		}
-		assert.NotEmpty(t, jl.Logger)
-		assert.Equal(t, "finish streaming", jl.Msg)
-		assert.Equal(t, int64(2000), jl.Cost)
-		assert.Equal(t, "OK", jl.Code)
+		assert.Equal(t, slog.InfoLevel.String(), mps[4][slog.LevelKey])
+		assert.Equal(t, "finish streaming", mps[4]["msg"])
+		assert.Equal(t, 2_000_000_000.0, mps[4]["cost"])
+		assert.Equal(t, "OK", mps[4]["code"])
 	})
 	t.Run("default_err", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		interceptor := StreamInterceptor()
 		ss := &mockStream{
-			ctx: context.Background(),
+			ctx: ctx,
 			recvFn: func(m any) error {
 				sp, ok := m.(*string)
 				if !ok {
@@ -336,7 +233,7 @@ func TestStreamInterceptor(t *testing.T) {
 				return nil
 			},
 		}
-		err = interceptor(
+		err := interceptor(
 			nil,
 			ss,
 			&grpc.StreamServerInfo{FullMethod: "testMethod"},
@@ -346,43 +243,36 @@ func TestStreamInterceptor(t *testing.T) {
 			},
 		)
 		assert.NotNil(t, err)
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		t.Log(scanner.Text())
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes := scanner.Bytes()
-		t.Log(string(bytes))
-		jl := &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		assert.Nil(t, err)
-		assert.Equal(t, "error streaming", jl.Msg)
-		assert.Equal(t, codes.Unimplemented.String(), jl.Code)
-		assert.Equal(t, "test", jl.Reason)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.ErrorVerbose)
+		logBuf.Reset()
+		assert.Len(t, mps, 2)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "start streaming", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "error streaming", mps[1]["msg"])
+		assert.Equal(t, codes.Unimplemented.String(), mps[1]["code"])
+		assert.Equal(t, "test", mps[1]["reason"])
+		assert.NotEmpty(t, mps[1]["err"])
 	})
 	t.Run("default_recv_err", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		interceptor := StreamInterceptor()
 		ss := &mockStream{
-			ctx: context.Background(),
+			ctx: ctx,
 			recvFn: func(m any) error {
 				return pkgerrors.New("test")
 			},
@@ -390,7 +280,7 @@ func TestStreamInterceptor(t *testing.T) {
 				return nil
 			},
 		}
-		err = interceptor(
+		err := interceptor(
 			nil,
 			ss,
 			&grpc.StreamServerInfo{FullMethod: "testMethod"},
@@ -399,56 +289,40 @@ func TestStreamInterceptor(t *testing.T) {
 			},
 		)
 		assert.NotNil(t, err)
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		t.Log(scanner.Text())
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes := scanner.Bytes()
-		t.Log(string(bytes))
-		jl := &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		assert.Nil(t, err)
-		assert.Equal(t, "recv msg fail", jl.Msg)
-		assert.Empty(t, jl.Code)
-		assert.Empty(t, jl.Reason)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.ErrorVerbose)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes = scanner.Bytes()
-		t.Log(string(bytes))
-		jl = &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		assert.Nil(t, err)
-		assert.Equal(t, "error streaming", jl.Msg)
-		assert.NotEmpty(t, jl.Code)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.ErrorVerbose)
+		logBuf.Reset()
+		assert.Len(t, mps, 3)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "start streaming", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "recv msg fail", mps[1]["msg"])
+		assert.Empty(t, mps[1]["code"])
+		assert.Empty(t, mps[1]["reason"])
+		assert.NotEmpty(t, mps[1]["err"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[2][slog.LevelKey])
+		assert.Equal(t, "error streaming", mps[2]["msg"])
+		assert.NotEmpty(t, mps[2]["code"])
+		assert.NotEmpty(t, mps[2]["err"])
 	})
 	t.Run("default_send_err", func(t *testing.T) {
-		origin := os.Stdout
-		defer func() {
-			os.Stdout = origin
-		}()
-		r, w, err := os.Pipe()
-		if err != nil {
-			panic(err)
-		}
-		os.Stdout = w
-		logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-			o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-		})))
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		interceptor := StreamInterceptor()
 		ss := &mockStream{
-			ctx: context.Background(),
+			ctx: ctx,
 			recvFn: func(m any) error {
 				return nil
 			},
@@ -456,7 +330,7 @@ func TestStreamInterceptor(t *testing.T) {
 				return pkgerrors.New("test")
 			},
 		}
-		err = interceptor(
+		err := interceptor(
 			nil,
 			ss,
 			&grpc.StreamServerInfo{FullMethod: "testMethod"},
@@ -470,38 +344,33 @@ func TestStreamInterceptor(t *testing.T) {
 			},
 		)
 		assert.NotNil(t, err)
-		scanner := bufio.NewScanner(r)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		t.Log(scanner.Text())
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes := scanner.Bytes()
-		t.Log(string(bytes))
-		jl := &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		assert.Nil(t, err)
-		assert.Equal(t, "send msg fail", jl.Msg)
-		assert.Empty(t, jl.Code)
-		assert.Empty(t, jl.Reason)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.ErrorVerbose)
-		if !scanner.Scan() {
-			t.Fatalf("want scan ok, but can not scan")
-		}
-		bytes = scanner.Bytes()
-		t.Log(string(bytes))
-		jl = &jsonLine{}
-		err = json.Unmarshal(bytes, jl)
-		assert.Nil(t, err)
-		assert.Equal(t, "error streaming", jl.Msg)
-		assert.NotEmpty(t, jl.Code)
-		assert.NotEmpty(t, jl.Error)
-		assert.NotEmpty(t, jl.ErrorVerbose)
-		t.Log(jl.ErrorVerbose)
+		logBuf.Reset()
+		assert.Len(t, mps, 3)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, "start streaming", mps[0]["msg"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+		assert.Equal(t, "send msg fail", mps[1]["msg"])
+		assert.Empty(t, mps[1]["code"])
+		assert.Empty(t, mps[1]["reason"])
+		assert.NotEmpty(t, mps[1]["err"])
+		assert.Equal(t, slog.InfoLevel.String(), mps[2][slog.LevelKey])
+		assert.Equal(t, "error streaming", mps[2]["msg"])
+		assert.NotEmpty(t, mps[2]["code"])
+		assert.NotEmpty(t, mps[2]["err"])
 	})
 	tests := []struct {
 		method       string
@@ -531,22 +400,11 @@ func TestStreamInterceptor(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(fmt.Sprintf("default_%s", test.method), func(t *testing.T) {
-			origin := os.Stdout
-			defer func() {
-				os.Stdout = origin
-			}()
-			r, w, err := os.Pipe()
-			if err != nil {
-				panic(err)
-			}
-			os.Stdout = w
-			logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-				o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-			})))
-
+			logBuf := &bytes.Buffer{}
+			ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 			interceptor := StreamInterceptor()
 			ss := &mockStream{
-				ctx: context.Background(),
+				ctx: ctx,
 				recvFn: func(m any) error {
 					return nil
 				},
@@ -559,7 +417,7 @@ func TestStreamInterceptor(t *testing.T) {
 				IsClientStream: test.clientStream,
 				IsServerStream: test.serverStream,
 			}
-			err = interceptor(
+			err := interceptor(
 				nil,
 				ss,
 				info,
@@ -568,83 +426,26 @@ func TestStreamInterceptor(t *testing.T) {
 				},
 			)
 			assert.Nil(t, err)
-			scanner := bufio.NewScanner(r)
-			if !scanner.Scan() {
-				t.Fatalf("want scan ok, but can not scan")
+			var mps []map[string]any
+			scanner := bufio.NewScanner(logBuf)
+			for scanner.Scan() {
+				if errors.Is(scanner.Err(), io.EOF) {
+					continue
+				}
+				t.Logf("%s", scanner.Text())
+				mp := map[string]any{}
+				if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+					mps = append(mps, mp)
+				} else {
+					t.Logf("err line: %v: %s", err, scanner.Text())
+				}
 			}
-			t.Log(scanner.Text())
-			bytes := scanner.Bytes()
-			t.Log(string(bytes))
-			jl := &jsonLine{}
-			err = json.Unmarshal(bytes, jl)
-			assert.Nil(t, err)
-		})
-	}
-	t.Run("with_opts", func(t *testing.T) {
-		count := 0
-		interceptor := StreamInterceptor(func(o *options) {
-			count++
-		})
-		ss := &mockStream{
-			ctx: context.Background(),
-			recvFn: func(m any) error {
-				return nil
-			},
-			sendFn: func(m any) error {
-				return nil
-			},
-		}
-		_ = interceptor(
-			nil,
-			ss,
-			&grpc.StreamServerInfo{FullMethod: "testMethod"},
-			func(srv any, stream grpc.ServerStream) error {
-				return nil
-			},
-		)
-		assert.Equal(t, 1, count)
-	})
-}
-
-type wolf struct{}
-
-func (wolf) String() string {
-	return "I'm a wolf."
-}
-
-func (wolf) LogReplace() any {
-	return sheep{}
-}
-
-type sheep struct{}
-
-func (sheep) String() string {
-	return "I'm a sheep."
-}
-
-func Test_msgLogging(t *testing.T) {
-	type args struct {
-		m any
-	}
-	tests := []struct {
-		name string
-		args args
-		want any
-	}{
-		{
-			name: "sheep",
-			args: args{m: sheep{}},
-			want: sheep{},
-		},
-		{
-			name: "wolf",
-			args: args{m: wolf{}},
-			want: sheep{},
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equalf(t, tt.want, msgLogging(tt.args.m), "msgLogging(%v)", tt.args.m)
+			logBuf.Reset()
+			assert.Len(t, mps, 2)
+			assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+			assert.Equal(t, "start streaming", mps[0]["msg"])
+			assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
+			assert.Equal(t, "finish streaming", mps[1]["msg"])
 		})
 	}
 }

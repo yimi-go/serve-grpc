@@ -2,42 +2,25 @@ package serve_grpc
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
-	"os"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/yimi-go/logging"
-	"github.com/yimi-go/logging/hook"
 	runserver "github.com/yimi-go/runner/server"
-	zapLogging "github.com/yimi-go/zap-logging"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
 )
-
-type record struct {
-	meth  string
-	param []any
-}
-
-type jsonLine struct {
-	Param     map[string]any `json:"param,omitempty"`
-	Other     map[string]any `json:"-"`
-	Transport string         `json:"transport"`
-	Actor     string         `json:"actor"`
-	Address   string         `json:"address"`
-	Method    string         `json:"method"`
-	Api       string         `json:"api"`
-	Msg       string         `json:"msg"`
-}
 
 type mockServerStream struct {
 	md  metadata.MD
@@ -64,20 +47,11 @@ func plainLisPort(port uint16) ListenFunc {
 	}
 }
 
-func TestWithRunName(t *testing.T) {
+func TestWithName(t *testing.T) {
 	srv := &Server{}
 	v := "testRunner"
-	WithRunName(v)(srv)
-	assert.Equal(t, v, srv.runName)
-}
-
-func TestWithLogName(t *testing.T) {
-	srv := &Server{}
-	v := "test"
-	WithLogName(v)(srv)
-	if v != srv.logName {
-		t.Errorf("expect %s, got %s", v, srv.logName)
-	}
+	WithName(v)(srv)
+	assert.Equal(t, v, srv.name)
 }
 
 func TestWithTimeout(t *testing.T) {
@@ -160,9 +134,9 @@ func TestNewServer(t *testing.T) {
 		if srv.Server == nil {
 			t.Errorf("want srv.gServer not nil, got nil")
 		}
-		wantLogName := "grpc.server"
-		if !reflect.DeepEqual(srv.logName, wantLogName) {
-			t.Errorf("got srv.logName: %v, want: %v", srv.logName, wantLogName)
+		wantName := ""
+		if !reflect.DeepEqual(srv.name, wantName) {
+			t.Errorf("got srv.name: %v, want: %v", srv.name, wantName)
 		}
 		if len(srv.grpcOpts) != 0 {
 			t.Errorf("expect empty srv.grpcOpts, got %v", srv.grpcOpts)
@@ -174,10 +148,10 @@ func TestNewServer(t *testing.T) {
 			t.Errorf("expect Reflection service registed, but not")
 		}
 	})
-	t.Run("logName", func(t *testing.T) {
-		srv := NewServer(plainLisFn, WithLogName("my.server"))
-		if !reflect.DeepEqual(srv.logName, "my.server") {
-			t.Errorf("want srv.logName: %v, got %v", "my.server", srv.logName)
+	t.Run("name", func(t *testing.T) {
+		srv := NewServer(plainLisFn, WithName("my.server"))
+		if !reflect.DeepEqual(srv.name, "my.server") {
+			t.Errorf("want srv.name: %v, got %v", "my.server", srv.name)
 		}
 	})
 	t.Run("grpcOption", func(t *testing.T) {
@@ -224,14 +198,6 @@ func TestNewServer(t *testing.T) {
 	})
 }
 
-func TestServer_logger(t *testing.T) {
-	srv := NewServer(plainLisFn)
-	logger := srv.logger(context.Background())
-	if logger == nil {
-		t.Errorf("expect a logger, got nil")
-	}
-}
-
 func TestServer_Run(t *testing.T) {
 	t.Run("listen_err", func(t *testing.T) {
 		srv := NewServer(func() (net.Listener, error) {
@@ -242,80 +208,52 @@ func TestServer_Run(t *testing.T) {
 		}
 	})
 	t.Run("listen_with_grpc_creds", func(t *testing.T) {
-		ch := make(chan *record, 10)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
+
 		x509KeyPair, err := tls.LoadX509KeyPair("testdata/rsa-cert.pem", "testdata/rsa-key.pem")
-		if err != nil {
-			t.Fatalf("err loading x509 key pair: %v", err)
-		}
-		tlsConfig := &tls.Config{Certificates: []tls.Certificate{x509KeyPair}}
-		if err != nil {
-			t.Fatalf("unexpect err loading tls config: %v", err)
-		}
-		srv := NewServer(plainLisFn, WithTLSConfig(tlsConfig))
+		assert.Nilf(t, err, "err loading x509 key pair: %v", err)
+		srv := NewServer(plainLisFn, WithTLSConfig(&tls.Config{Certificates: []tls.Certificate{x509KeyPair}}))
 		go func() {
-			if err := srv.Run(context.Background()); err != nil {
-				t.Errorf("unexpected err: %v", err)
-			}
+			err := srv.Run(ctx)
+			assert.Nilf(t, err, "unexpected err: %v", err)
 		}()
-		select {
-		case r := <-ch:
-			if r.meth != "Infof" {
-				t.Errorf("expect Infof log, got %v", r)
+		time.Sleep(time.Millisecond)
+		defer func(srv *Server, ctx context.Context) {
+			_ = srv.Stop(ctx)
+		}(srv, ctx)
+
+		assert.NotNilf(t, srv.lis, "expect a listener, got nil")
+		resp, err := srv.health.Check(context.Background(), &grpc_health_v1.HealthCheckRequest{Service: ""})
+		assert.Nilf(t, err, "unexpected err: %v", err)
+		assert.Equal(t, grpc_health_v1.HealthCheckResponse_SERVING, resp.Status)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
 			}
-			t.Logf(r.param[0].(string), r.param[1].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
-		if srv.lis == nil {
-			t.Errorf("expect a listener, got nil")
-		}
-		resp, err := srv.health.Check(
-			context.Background(),
-			&grpc_health_v1.HealthCheckRequest{
-				Service: "",
-			},
-		)
-		if err != nil {
-			t.Errorf("unexpected err: %v", err)
-		}
-		if resp.Status != grpc_health_v1.HealthCheckResponse_SERVING {
-			t.Errorf("expect health status: %v, got %v",
-				grpc_health_v1.HealthCheckResponse_SERVING, resp.Status)
-		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 	t.Run("listen_plain", func(t *testing.T) {
-		ch := make(chan *record, 10)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		srv := NewServer(plainLisFn)
 		go func() {
-			if err := srv.Run(context.Background()); err != nil {
-				t.Errorf("unexpected err: %v", err)
-			}
+			err := srv.Run(ctx)
+			assert.Nilf(t, err, "unexpected err: %v", err)
 		}()
-		select {
-		case r := <-ch:
-			if r.meth != "Infof" {
-				t.Errorf("expect Infof log, got %v", r)
-			}
-			t.Logf(r.param[0].(string), r.param[1].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
-		}
+		time.Sleep(time.Millisecond)
 		if srv.lis == nil {
 			t.Errorf("expect a listener, got nil")
 		}
@@ -332,6 +270,23 @@ func TestServer_Run(t *testing.T) {
 			t.Errorf("expect health status: %v, got %v",
 				grpc_health_v1.HealthCheckResponse_SERVING, resp.Status)
 		}
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
+		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 }
 
@@ -339,83 +294,63 @@ func TestServer_Stop(t *testing.T) {
 	t.Run("common", func(t *testing.T) {
 		srv := NewServer(plainLisFn)
 		go func() {
-			if err := srv.Run(context.Background()); err != nil {
-				t.Errorf("unexpected err: %v", err)
-			}
+			err := srv.Run(context.Background())
+			assert.Nilf(t, err, "unexpected err: %v", err)
 		}()
 		time.Sleep(time.Millisecond) // let Run goroutine do the job.
-		ch := make(chan *record, 10)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
-		if err := srv.Stop(context.Background()); err != nil {
-			t.Errorf("unexpected err: %v", err)
-		}
-		select {
-		case r := <-ch:
-			if r.meth != "Info" {
-				t.Errorf("expected Info log, got %v", r)
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
+		err := srv.Stop(ctx)
+		assert.Nilf(t, err, "unexpected err: %v", err)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
 			}
-			t.Log(r.param[0].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
-		}
-		select {
-		case r := <-ch:
-			if r.meth != "Info" {
-				t.Errorf("expected Info log, got %v", r)
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
 			}
-			t.Log(r.param[0].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 2)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
+		assert.Equal(t, slog.InfoLevel.String(), mps[1][slog.LevelKey])
 	})
 	t.Run("cancel", func(t *testing.T) {
 		srv := NewServer(plainLisFn)
 		go func() {
-			if err := srv.Run(context.Background()); err != nil {
-				t.Errorf("unexpected err: %v", err)
-			}
+			err := srv.Run(context.Background())
+			assert.Nilf(t, err, "unexpected err: %v", err)
 		}()
 		time.Sleep(time.Millisecond) // let Run goroutine do the job.
-		ch := make(chan *record, 10)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
-		ctx, cancel := context.WithCancel(context.Background())
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
+		ctx, cancel := context.WithCancel(ctx)
 		cancel()
 		err := srv.Stop(ctx)
-		if err == nil {
-			t.Errorf("want err, got nil")
-		}
-		select {
-		case r := <-ch:
-			if r.meth != "Info" {
-				t.Errorf("expected Info log, got %v", r)
+		assert.NotNilf(t, err, "want err, got nil")
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
 			}
-			t.Log(r.param[0].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
-		}
-		select {
-		case r := <-ch:
-			if r.meth != "Info" {
-				t.Errorf("expected Info log, got %v", r)
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
 			}
-			t.Log(r.param[0].([]any)...)
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 }
 
@@ -570,39 +505,43 @@ func TestServer_unaryServerInterceptor(t *testing.T) {
 		defer func() {
 			_ = srv.Stop(context.Background())
 		}()
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		_, _ = srv.unaryServerInterceptor()(
-			context.Background(),
+			ctx,
 			&struct{}{},
 			&grpc.UnaryServerInfo{FullMethod: "some method"},
 			func(ctx context.Context, req any) (any, error) {
-				origin := os.Stdout
-				defer func() {
-					os.Stdout = origin
-				}()
-				r, w, err := os.Pipe()
-				if err != nil {
-					panic(err)
-				}
-				os.Stdout = w
-				factory := zapLogging.NewFactory(zapLogging.NewOptions())
-				logger := factory.Logger("test")
-				logger = logging.WithContextField(ctx, logger)
-				logger.Info("hello")
-				scanner := bufio.NewScanner(r)
-				assert.True(t, scanner.Scan())
-				assert.Nil(t, scanner.Err())
-				assert.NotEmpty(t, scanner.Text())
-				jl := &jsonLine{}
-				assert.Nil(t, json.Unmarshal(scanner.Bytes(), jl))
-				assert.Equal(t, "grpc", jl.Transport)
-				assert.Equal(t, "server", jl.Actor)
-				assert.Equal(t, "127.0.0.1:9989", jl.Address)
-				assert.Equal(t, "unary", jl.Method)
-				assert.Equal(t, "some method", jl.Api)
-				assert.NotNil(t, jl.Param["req"])
+				slog.Ctx(ctx).Info("hello")
 				return &struct{}{}, nil
 			},
 		)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
+		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		mp := mps[0]
+		assert.Equal(t, slog.InfoLevel.String(), mp[slog.LevelKey])
+		assert.Equal(t, "grpc", mp["transport"])
+		assert.Equal(t, "server", mp["actor"])
+		assert.Equal(t, "127.0.0.1:9989", mp["address"])
+		assert.Equal(t, "unary", mp["method"])
+		assert.Equal(t, "some method", mp["api"])
+		param, ok := mp["param"].(map[string]any)
+		assert.True(t, ok)
+		assert.NotNil(t, param["req"])
 	})
 }
 
@@ -622,13 +561,9 @@ func TestServer_streamServerInterceptor(t *testing.T) {
 			&struct{}{},
 			&mockServerStream{metadata.MD{}, context.Background()},
 			&grpc.StreamServerInfo{},
-			func(srv any, stream grpc.ServerStream) error {
-				return nil
-			},
+			func(srv any, stream grpc.ServerStream) error { return nil },
 		)
-		if err == nil {
-			t.Errorf("want error, got nil")
-		}
+		assert.NotNilf(t, err, "want error, got nil")
 	})
 	tests := []struct {
 		api          string
@@ -681,43 +616,45 @@ func TestServer_streamServerInterceptor(t *testing.T) {
 			defer func() {
 				_ = srv.Stop(context.Background())
 			}()
+			logBuf := &bytes.Buffer{}
+			ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 			err := srv.streamServerInterceptor()(
 				&struct{}{},
-				&mockServerStream{metadata.MD{}, context.Background()},
+				&mockServerStream{metadata.MD{}, ctx},
 				&grpc.StreamServerInfo{
 					FullMethod:     test.api,
 					IsClientStream: test.clientStream,
 					IsServerStream: test.serverStream,
 				},
 				func(srv any, stream grpc.ServerStream) error {
-					origin := os.Stdout
-					defer func() {
-						os.Stdout = origin
-					}()
-					r, w, err := os.Pipe()
-					if err != nil {
-						panic(err)
-					}
-					os.Stdout = w
-					factory := zapLogging.NewFactory(zapLogging.NewOptions())
-					logger := factory.Logger("test")
-					logger = logging.WithContextField(stream.Context(), logger)
-					logger.Info("hello")
-					scanner := bufio.NewScanner(r)
-					assert.True(t, scanner.Scan())
-					assert.Nil(t, scanner.Err())
-					assert.NotEmpty(t, scanner.Text())
-					jl := &jsonLine{}
-					assert.Nil(t, json.Unmarshal(scanner.Bytes(), jl))
-					assert.Equal(t, "grpc", jl.Transport)
-					assert.Equal(t, "server", jl.Actor)
-					assert.Equal(t, "127.0.0.1:9989", jl.Address)
-					assert.Equal(t, test.wantMethod, jl.Method)
-					assert.Equal(t, test.api, jl.Api)
+					slog.Ctx(stream.Context()).Info("hello")
 					return nil
 				},
 			)
 			assert.Nil(t, err)
+			var mps []map[string]any
+			scanner := bufio.NewScanner(logBuf)
+			for scanner.Scan() {
+				if errors.Is(scanner.Err(), io.EOF) {
+					continue
+				}
+				t.Logf("%s", scanner.Text())
+				mp := map[string]any{}
+				if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+					mps = append(mps, mp)
+				} else {
+					t.Logf("err line: %v: %s", err, scanner.Text())
+				}
+			}
+			logBuf.Reset()
+			assert.Len(t, mps, 1)
+			mp := mps[0]
+			assert.Equal(t, slog.InfoLevel.String(), mp[slog.LevelKey])
+			assert.Equal(t, "grpc", mp["transport"])
+			assert.Equal(t, "server", mp["actor"])
+			assert.Equal(t, "127.0.0.1:9989", mp["address"])
+			assert.Equal(t, test.wantMethod, mp["method"])
+			assert.Equal(t, test.api, mp["api"])
 		})
 	}
 }

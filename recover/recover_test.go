@@ -1,16 +1,19 @@
 package recover
 
 import (
+	"bufio"
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
 	"github.com/yimi-go/errors"
-	"github.com/yimi-go/logging"
-	"github.com/yimi-go/logging/hook"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	grpcinsecure "google.golang.org/grpc/credentials/insecure"
@@ -37,11 +40,6 @@ func (t *testHelloSvc) ServerGreets(
 	return t.serverGreetsFn(request, srv)
 }
 
-type record struct {
-	meth  string
-	param []any
-}
-
 func lis127(port uint16) serve_grpc.ListenFunc {
 	return func() (net.Listener, error) {
 		return net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
@@ -66,27 +64,11 @@ func TestWithUnaryHandler(t *testing.T) {
 	}
 }
 
-func TestWithUnaryLogName(t *testing.T) {
-	target := &unaryOptions{}
-	name := "test"
-	WithUnaryLogName(name)(target)
-	if name != target.logName {
-		t.Errorf("want %v, got %v", name, target.logName)
-	}
-}
-
 func TestUnaryRecover(t *testing.T) {
 	t.Run("no_panic", func(t *testing.T) {
-		ch := make(chan *record, 10)
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		srvErr := make(chan error)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
 		svc := &testHelloSvc{
 			sayHelloFn: func(ctx context.Context, request *hello.SayHelloRequest) (*hello.SayHelloResponse, error) {
 				return &hello.SayHelloResponse{Message: fmt.Sprintf("Hello, %s", request.Name)}, nil
@@ -98,18 +80,18 @@ func TestUnaryRecover(t *testing.T) {
 		)
 		hello.RegisterGreeterServiceServer(srv, svc)
 		go func() {
-			if err := srv.Run(context.Background()); err != nil {
+			if err := srv.Run(ctx); err != nil {
 				srvErr <- err
 			}
 			close(srvErr)
 		}()
-		defer func() {
-			_ = srv.Stop(context.Background())
+		defer func(ctx context.Context) {
+			_ = srv.Stop(ctx)
 			e, ok := <-srvErr
 			if ok {
 				t.Errorf("unexpect Run err: %v", e)
 			}
-		}()
+		}(ctx)
 		time.Sleep(time.Millisecond) // let server start running
 		address, _ := srv.Address()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -127,24 +109,28 @@ func TestUnaryRecover(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err calling SayHello: %v", err)
 		}
-		<-ch // ignore server start logging
-		select {
-		case r := <-ch:
-			t.Errorf("unexpected output: %+v", r)
-		case <-time.After(time.Millisecond):
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 	t.Run("panic", func(t *testing.T) {
-		ch := make(chan *record, 10)
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		srvErr := make(chan error)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
 		svc := &testHelloSvc{
 			sayHelloFn: func(ctx context.Context, request *hello.SayHelloRequest) (*hello.SayHelloResponse, error) {
 				panic("abc")
@@ -152,22 +138,20 @@ func TestUnaryRecover(t *testing.T) {
 		}
 		srv := serve_grpc.NewServer(
 			lis127(0),
-			serve_grpc.WithOption(grpc.ChainUnaryInterceptor(UnaryRecover(WithUnaryLogName("ha")))),
+			serve_grpc.WithOption(grpc.ChainUnaryInterceptor(UnaryRecover())),
 		)
 		hello.RegisterGreeterServiceServer(srv, svc)
-		go func() {
-			if err := srv.Run(context.Background()); err != nil {
+		go func(ctx context.Context) {
+			if err := srv.Run(ctx); err != nil {
 				srvErr <- err
 			}
 			close(srvErr)
-		}()
-		defer func() {
-			_ = srv.Stop(context.Background())
-			if e, ok := <-srvErr; ok {
-				t.Errorf("unexpected Run err: %v", e)
-			}
-		}()
-		<-ch // ignore server start logging
+		}(ctx)
+		defer func(ctx context.Context) {
+			_ = srv.Stop(ctx)
+			<-srvErr
+		}(ctx)
+		time.Sleep(time.Millisecond) // let server start running
 		address, _ := srv.Address()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -202,16 +186,23 @@ func TestUnaryRecover(t *testing.T) {
 		if gs, ok := status.FromError(err); ok {
 			t.Logf("status from err: %#v", gs)
 		}
-		t.Logf("call SayHello err: %v", err)
-		select {
-		case r := <-ch:
-			if r.meth != "Errorw" {
-				t.Errorf("expect Errorw, got %v", r.meth)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
 			}
-			t.Logf("%s %+v", r.param[0].(string), r.param[1])
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 }
 
@@ -231,27 +222,11 @@ func TestWithStreamHandler(t *testing.T) {
 	}
 }
 
-func TestWithStreamLogName(t *testing.T) {
-	target := &streamOptions{}
-	name := "test"
-	WithStreamLogName(name)(target)
-	if name != target.logName {
-		t.Errorf("want %v, got %v", name, target.logName)
-	}
-}
-
 func TestStreamRecover(t *testing.T) {
 	t.Run("no_panic", func(t *testing.T) {
-		ch := make(chan *record, 10)
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		srvErr := make(chan error)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
 		svc := &testHelloSvc{
 			serverGreetsFn: func(
 				request *hello.ServerGreetsRequest,
@@ -277,19 +252,19 @@ func TestStreamRecover(t *testing.T) {
 			serve_grpc.WithOption(grpc.ChainStreamInterceptor(StreamRecover())),
 		)
 		hello.RegisterGreeterServiceServer(srv, svc)
-		go func() {
-			if err := srv.Run(context.Background()); err != nil {
+		go func(ctx context.Context) {
+			if err := srv.Run(ctx); err != nil {
 				srvErr <- err
 			}
 			close(srvErr)
-		}()
-		defer func() {
-			_ = srv.Stop(context.Background())
+		}(ctx)
+		defer func(ctx context.Context) {
+			_ = srv.Stop(ctx)
 			e, ok := <-srvErr
 			if ok {
 				t.Errorf("unexpect Run err: %v", e)
 			}
-		}()
+		}(ctx)
 		time.Sleep(5 * time.Millisecond) // let server start running
 		address, _ := srv.Address()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -316,24 +291,28 @@ func TestStreamRecover(t *testing.T) {
 				t.Errorf("unexpected err: %v", err)
 			}
 		}
-		<-ch // ignore server start logging
-		select {
-		case r := <-ch:
-			t.Errorf("unexpected output: %+v", r)
-		case <-time.After(time.Millisecond):
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 	t.Run("panic", func(t *testing.T) {
-		ch := make(chan *record, 10)
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		srvErr := make(chan error)
-		originFactory := logging.SwapFactory(
-			hook.Hooked(logging.NewNopLoggerFactory(), func(meth string, param ...any) {
-				ch <- &record{meth, param}
-			}),
-		)
-		defer func() {
-			logging.SwapFactory(originFactory)
-		}()
 		svc := &testHelloSvc{
 			serverGreetsFn: func(
 				request *hello.ServerGreetsRequest,
@@ -344,23 +323,22 @@ func TestStreamRecover(t *testing.T) {
 		}
 		srv := serve_grpc.NewServer(
 			lis127(0),
-			serve_grpc.WithOption(grpc.ChainStreamInterceptor(StreamRecover(WithStreamLogName("ha")))),
+			serve_grpc.WithOption(grpc.ChainStreamInterceptor(StreamRecover())),
 		)
 		hello.RegisterGreeterServiceServer(srv, svc)
-		go func() {
-			if err := srv.Run(context.Background()); err != nil {
+		go func(ctx context.Context) {
+			if err := srv.Run(ctx); err != nil {
 				srvErr <- err
 			}
 			close(srvErr)
-		}()
-		defer func() {
-			_ = srv.Stop(context.Background())
+		}(ctx)
+		defer func(ctx context.Context) {
+			_ = srv.Stop(ctx)
 			if e, ok := <-srvErr; ok {
 				t.Errorf("unexpected Run err: %v", e)
 			}
-		}()
+		}(ctx)
 		time.Sleep(5 * time.Millisecond) // let Run goroutine do the job.
-		<-ch                             // ignore server start logging
 		address, _ := srv.Address()
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
@@ -388,14 +366,22 @@ func TestStreamRecover(t *testing.T) {
 				t.Errorf("want %v, got %v", codes.Unknown, code)
 			}
 		}
-		select {
-		case r := <-ch:
-			if r.meth != "Errorw" {
-				t.Errorf("expect Errorw, got %v", r.meth)
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
 			}
-			t.Logf("%s %+v", r.param[0].(string), r.param[1])
-		case <-time.After(time.Millisecond):
-			t.Errorf("timeout")
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
 		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		assert.Equal(t, slog.InfoLevel.String(), mps[0][slog.LevelKey])
 	})
 }

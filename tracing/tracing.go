@@ -3,10 +3,10 @@ package tracing
 import (
 	"context"
 
-	"github.com/yimi-go/logging"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 )
 
@@ -45,9 +45,11 @@ func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
 		handler grpc.UnaryHandler,
 	) (resp any, err error) {
 		handler1 := func(ctx context.Context, req any) (any, error) {
-			ctx = logging.NewContext(ctx,
-				logging.String("trace_id", TraceID(ctx)),
-				logging.String("span_id", SpanID(ctx)))
+			logger := slog.Ctx(ctx).With(
+				slog.String("trace_id", TraceID(ctx)),
+				slog.String("span_id", SpanID(ctx)),
+			)
+			ctx = slog.NewContext(ctx, logger)
 			return handler(ctx, req)
 		}
 		return otelgrpc.UnaryServerInterceptor(op.otelgrpcOptions()...)(ctx, req, info, handler1)
@@ -72,9 +74,11 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
 		handler1 := func(srv any, stream grpc.ServerStream) error {
 			ctx := stream.Context()
-			ctx = logging.NewContext(ctx,
-				logging.String("trace_id", TraceID(ctx)),
-				logging.String("span_id", SpanID(ctx)))
+			logger := slog.Ctx(ctx).With(
+				slog.String("trace_id", TraceID(ctx)),
+				slog.String("span_id", SpanID(ctx)),
+			)
+			ctx = slog.NewContext(ctx, logger)
 			stream = &wrappedStream{stream, ctx}
 			return handler(srv, stream)
 		}

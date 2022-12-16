@@ -2,10 +2,11 @@ package logging
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"github.com/yimi-go/errors"
-	"github.com/yimi-go/logging"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 )
@@ -15,34 +16,8 @@ var (
 	Since = time.Since
 )
 
-// LogReplacer 日志替换接口。对于特别大的消息，可以实现这个接口，提供一个日志摘要用于打日志，而不是打自己本身
-type LogReplacer interface {
-	LogReplace() any
-}
-
-// Option is logging interceptor option func.
-type Option func(o *options)
-
-type options struct {
-	logName string
-}
-
-// WithLogName sets the log name.
-// Default log name is "grpc.server.logging".
-func WithLogName(name string) Option {
-	return func(o *options) {
-		o.logName = name
-	}
-}
-
 // UnaryInterceptor returns a grpc.UnaryServerInterceptor that do logging.
-func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
-	opt := &options{
-		logName: "grpc.server.logging",
-	}
-	for _, o := range opts {
-		o(opt)
-	}
+func UnaryInterceptor() grpc.UnaryServerInterceptor {
 	return func(
 		ctx context.Context,
 		req any,
@@ -50,24 +25,29 @@ func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
 		handler grpc.UnaryHandler,
 	) (resp any, err error) {
 		start := Now()
-		logger := logging.GetFactory().Logger(opt.logName)
-		logger = logging.WithContextField(ctx, logger)
-		logger.Infow("receive request", logging.Any("req", msgLogging(req)))
+		logger := slog.Ctx(ctx)
+		if logger.Enabled(slog.InfoLevel) {
+			logger.Info("receive request", slog.Any("req", req))
+		}
 		resp, err = handler(ctx, req)
 		if err == nil {
-			logger.Infow("finish handling request",
-				logging.String("code", codes.OK.String()),
-				logging.Duration("cost", Since(start)),
-				logging.Any("resp", msgLogging(resp)),
-			)
+			if logger.Enabled(slog.InfoLevel) {
+				logger.Info("finish handling request",
+					slog.String("code", codes.OK.String()),
+					slog.Duration("cost", Since(start)),
+					slog.Any("resp", resp),
+				)
+			}
 		} else {
 			se := errors.FromError(err)
-			logger.Infow("fail handling request",
-				logging.String("code", se.GRPCStatus().Code().String()),
-				logging.String("reason", se.Reason),
-				logging.Duration("cost", Since(start)),
-				logging.Error(err),
-			)
+			if logger.Enabled(slog.InfoLevel) {
+				logger.Info("fail handling request",
+					slog.String("code", se.GRPCStatus().Code().String()),
+					slog.String("reason", se.Reason),
+					slog.Duration("cost", Since(start)),
+					slog.String("err", fmt.Sprintf("%+v", err)),
+				)
+			}
 		}
 		return
 	}
@@ -75,19 +55,23 @@ func UnaryInterceptor(opts ...Option) grpc.UnaryServerInterceptor {
 
 type wrappedStream struct {
 	grpc.ServerStream
-	logger logging.Logger
+	logger *slog.Logger
 	start  time.Time
 }
 
 func (w *wrappedStream) SendMsg(m any) error {
 	err := w.ServerStream.SendMsg(m)
 	if err == nil {
-		w.logger.Infow("send msg", logging.Any("resp", msgLogging(m)))
+		if w.logger.Enabled(slog.InfoLevel) {
+			w.logger.Info("send msg", slog.Any("resp", m))
+		}
 	} else {
-		w.logger.Infow("send msg fail",
-			logging.Any("resp", msgLogging(m)),
-			logging.Error(err),
-		)
+		if w.logger.Enabled(slog.InfoLevel) {
+			w.logger.Info("send msg fail",
+				slog.Any("resp", m),
+				slog.String("err", fmt.Sprintf("%+v", err)),
+			)
+		}
 	}
 	return err
 }
@@ -96,23 +80,22 @@ func (w *wrappedStream) RecvMsg(m any) error {
 	err := w.ServerStream.RecvMsg(m)
 	if err == nil {
 		param := map[string]any{
-			"req": msgLogging(m),
+			"req": slog.AnyValue(m).Resolve(),
 		}
-		w.logger.Infow("recv msg", logging.Any("param", param))
+		if w.logger.Enabled(slog.InfoLevel) {
+			w.logger.Info("recv msg", slog.Any("param", param))
+		}
 	} else {
-		w.logger.Infow("recv msg fail", logging.Error(err))
+		if w.logger.Enabled(slog.InfoLevel) {
+			w.logger.Info("recv msg fail",
+				slog.String("err", fmt.Sprintf("%+v", err)))
+		}
 	}
 	return err
 }
 
 // StreamInterceptor returns a grpc.StreamServerInterceptor that do logging.
-func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
-	opt := &options{
-		logName: "grpc.server.logging",
-	}
-	for _, o := range opts {
-		o(opt)
-	}
+func StreamInterceptor() grpc.StreamServerInterceptor {
 	return func(
 		srv any,
 		ss grpc.ServerStream,
@@ -120,35 +103,31 @@ func StreamInterceptor(opts ...Option) grpc.StreamServerInterceptor {
 		handler grpc.StreamHandler,
 	) error {
 		start := Now()
-		logger := logging.GetFactory().Logger(opt.logName)
-		logger = logging.WithContextField(ss.Context(), logger)
-		logger.Infow("start streaming")
+		logger := slog.Ctx(ss.Context())
+		logger.Info("start streaming")
 		err := handler(srv, &wrappedStream{
 			ServerStream: ss,
 			logger:       logger,
 			start:        start,
 		})
 		if err == nil {
-			logger.Infow("finish streaming",
-				logging.String("code", codes.OK.String()),
-				logging.Duration("cost", Since(start)),
-			)
+			if logger.Enabled(slog.InfoLevel) {
+				logger.Info("finish streaming",
+					slog.String("code", codes.OK.String()),
+					slog.Duration("cost", Since(start)),
+				)
+			}
 		} else {
 			se := errors.FromError(err)
-			logger.Infow("error streaming",
-				logging.String("code", se.GRPCStatus().Code().String()),
-				logging.String("reason", se.Reason),
-				logging.Duration("cost", Since(start)),
-				logging.Error(err),
-			)
+			if logger.Enabled(slog.InfoLevel) {
+				logger.Info("error streaming",
+					slog.String("code", se.GRPCStatus().Code().String()),
+					slog.String("reason", se.Reason),
+					slog.Duration("cost", Since(start)),
+					slog.String("err", fmt.Sprintf("%+v", err)),
+				)
+			}
 		}
 		return err
 	}
-}
-
-func msgLogging(m any) any {
-	if ls, ok := m.(LogReplacer); ok {
-		return ls.LogReplace()
-	}
-	return m
 }

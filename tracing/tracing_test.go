@@ -5,20 +5,18 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"os"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/yimi-go/logging"
-	zapLogging "github.com/yimi-go/zap-logging"
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.10.0"
-	"go.opentelemetry.io/otel/trace"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
 
@@ -56,28 +54,39 @@ func TestUnaryInterceptor(t *testing.T) {
 
 	})
 	t.Run("no_tp", func(t *testing.T) {
-		loggingDefer, r := initLogging()
-		defer loggingDefer()
-		defer func() { _ = r.Close() }()
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		interceptor := UnaryInterceptor()
 		var handleCtx context.Context
-		resp, err := interceptor(context.Background(), &hello.SayHelloRequest{Name: "abc"}, &grpc.UnaryServerInfo{
+		resp, err := interceptor(ctx, &hello.SayHelloRequest{Name: "abc"}, &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
 		}, func(ctx context.Context, req any) (any, error) {
 			handleCtx = ctx
-			logger := logging.GetFactory().Logger("test")
-			logger = logging.WithContextField(ctx, logger)
+			logger := slog.Ctx(ctx)
 			logger.Info("foo")
 			return &hello.SayHelloResponse{Message: "xyz"}, nil
 		})
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)
-		scanner := bufio.NewScanner(r)
-		assert.True(t, scanner.Scan(), "scan fail")
-		mp := map[string]any{}
-		assert.Nil(t, json.Unmarshal(scanner.Bytes(), &mp))
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
+		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		mp := mps[0]
+		assert.Equal(t, slog.InfoLevel.String(), mp[slog.LevelKey])
 		traceId, ok := mp["trace_id"]
 		assert.True(t, ok)
 		assert.Empty(t, traceId)
@@ -88,43 +97,49 @@ func TestUnaryInterceptor(t *testing.T) {
 		assert.Equal(t, spanId, SpanID(handleCtx))
 	})
 	t.Run("stdout_trace", func(t *testing.T) {
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
 		ew := &bytes.Buffer{}
-		tpDefer, otp := initTp(ew)
+		tpDefer := initTp(ew)
 		defer tpDefer()
-		defer func() {
-			otel.SetTracerProvider(otp)
-		}()
-		loggingDefer, r := initLogging()
-		defer loggingDefer()
-		defer func() { _ = r.Close() }()
-
 		interceptor := UnaryInterceptor()
 		var handleCtx context.Context
-		resp, err := interceptor(context.Background(), &hello.SayHelloRequest{Name: "abc"}, &grpc.UnaryServerInfo{
+		resp, err := interceptor(ctx, &hello.SayHelloRequest{Name: "abc"}, &grpc.UnaryServerInfo{
 			Server:     nil,
 			FullMethod: "testMethod",
 		}, func(ctx context.Context, req any) (any, error) {
 			handleCtx = ctx
-			logger := logging.GetFactory().Logger("test")
-			logger = logging.WithContextField(ctx, logger)
+			logger := slog.Ctx(ctx)
 			logger.Info("foo")
 			return &hello.SayHelloResponse{Message: "xyz"}, nil
 		})
 		assert.Nil(t, err)
 		assert.NotNil(t, resp)
-		scanner := bufio.NewScanner(r)
-		assert.True(t, scanner.Scan(), "scan fail")
-		mp := map[string]any{}
-		assert.Nil(t, json.Unmarshal(scanner.Bytes(), &mp))
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
+		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		mp := mps[0]
+		assert.Equal(t, slog.InfoLevel.String(), mp[slog.LevelKey])
 		traceId, ok := mp["trace_id"]
 		assert.True(t, ok)
 		assert.NotEmpty(t, traceId)
-		t.Logf("traceId: %s", traceId)
 		assert.Equal(t, traceId, TraceID(handleCtx))
 		spanId, ok := mp["span_id"]
 		assert.True(t, ok)
 		assert.NotEmpty(t, spanId)
-		t.Logf("span_id: %s", spanId)
 		assert.Equal(t, spanId, SpanID(handleCtx))
 	})
 }
@@ -138,15 +153,16 @@ func TestStreamInterceptor(t *testing.T) {
 		assert.Equal(t, 1, count)
 	})
 	t.Run("tp", func(t *testing.T) {
-		loggingDefer, r := initLogging()
-		defer loggingDefer()
-		defer func() { _ = r.Close() }()
-
+		logBuf := &bytes.Buffer{}
+		ctx := slog.NewContext(context.Background(), slog.New(slog.NewJSONHandler(logBuf)))
+		ew := &bytes.Buffer{}
+		tpDefer := initTp(ew)
+		defer tpDefer()
 		interceptor := StreamInterceptor()
 		var handleCtx context.Context
 		err := interceptor(nil, &mockStream{
 			header: metadata.Pairs(),
-			ctx:    context.Background(),
+			ctx:    ctx,
 			sendFn: func(m any) error { return nil },
 			recvFn: func(m any) error { return nil },
 		}, &grpc.StreamServerInfo{
@@ -155,43 +171,39 @@ func TestStreamInterceptor(t *testing.T) {
 			IsServerStream: true,
 		}, func(srv any, stream grpc.ServerStream) error {
 			handleCtx = stream.Context()
-			logger := logging.GetFactory().Logger("test")
-			logger = logging.WithContextField(stream.Context(), logger)
+			logger := slog.Ctx(stream.Context())
 			logger.Info("foo")
 			return nil
 		})
 		assert.Nil(t, err)
-		scanner := bufio.NewScanner(r)
-		assert.True(t, scanner.Scan(), "scan fail")
-		mp := map[string]any{}
-		assert.Nil(t, json.Unmarshal(scanner.Bytes(), &mp))
+		var mps []map[string]any
+		scanner := bufio.NewScanner(logBuf)
+		for scanner.Scan() {
+			if errors.Is(scanner.Err(), io.EOF) {
+				continue
+			}
+			t.Logf("%s", scanner.Text())
+			mp := map[string]any{}
+			if err := json.Unmarshal(scanner.Bytes(), &mp); err == nil {
+				mps = append(mps, mp)
+			} else {
+				t.Logf("err line: %v: %s", err, scanner.Text())
+			}
+		}
+		logBuf.Reset()
+		assert.Len(t, mps, 1)
+		mp := mps[0]
+		assert.Equal(t, slog.InfoLevel.String(), mp[slog.LevelKey])
 		traceId, ok := mp["trace_id"]
 		assert.True(t, ok)
-		t.Logf("traceId: %s", traceId)
 		assert.Equal(t, traceId, TraceID(handleCtx))
 		spanId, ok := mp["span_id"]
 		assert.True(t, ok)
-		t.Logf("span_id: %s", spanId)
 		assert.Equal(t, spanId, SpanID(handleCtx))
 	})
 }
 
-func initLogging() (func(), io.ReadCloser) {
-	origin := os.Stdout
-	r, w, err := os.Pipe()
-	if err != nil {
-		panic(err)
-	}
-	os.Stdout = w
-	logging.SwapFactory(zapLogging.NewFactory(zapLogging.NewOptions(func(o *zapLogging.Options) {
-		o.Levels = map[string]logging.Level{"": logging.InfoLevel}
-	})))
-	return func() {
-		os.Stdout = origin
-	}, r
-}
-
-func initTp(w io.Writer) (func(), trace.TracerProvider) {
+func initTp(w io.Writer) func() {
 	exp, err := newExporter(w)
 	if err != nil {
 		panic(err)
@@ -203,10 +215,11 @@ func initTp(w io.Writer) (func(), trace.TracerProvider) {
 	otp := otel.GetTracerProvider()
 	otel.SetTracerProvider(tp)
 	return func() {
+		otel.SetTracerProvider(otp)
 		if err := tp.Shutdown(context.Background()); err != nil {
 			panic(err)
 		}
-	}, otp
+	}
 }
 
 func newExporter(w io.Writer) (sdktrace.SpanExporter, error) {

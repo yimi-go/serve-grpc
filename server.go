@@ -3,12 +3,13 @@ package serve_grpc
 import (
 	"context"
 	"crypto/tls"
+	"fmt"
 	"net"
 	"sync"
 	"time"
 
-	"github.com/yimi-go/logging"
 	runserver "github.com/yimi-go/runner/server"
+	"golang.org/x/exp/slog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
@@ -21,16 +22,9 @@ type ListenFunc func() (net.Listener, error)
 // ServerOption is gRPC server option.
 type ServerOption func(s *Server)
 
-func WithRunName(name string) ServerOption {
+func WithName(name string) ServerOption {
 	return func(s *Server) {
-		s.runName = name
-	}
-}
-
-// WithLogName returns a ServerOption that sets the logger name.
-func WithLogName(name string) ServerOption {
-	return func(s *Server) {
-		s.logName = name
+		s.name = name
 	}
 }
 
@@ -80,8 +74,7 @@ type Server struct {
 	*grpc.Server
 	lisFn       ListenFunc
 	health      *health.Server
-	runName     string
-	logName     string
+	name        string
 	unaryInts   []grpc.UnaryServerInterceptor
 	streamInts  []grpc.StreamServerInterceptor
 	grpcOpts    []grpc.ServerOption
@@ -95,7 +88,6 @@ type Server struct {
 func NewServer(lisFn ListenFunc, opts ...ServerOption) *Server {
 	srv := &Server{
 		lisFn:   lisFn,
-		logName: "grpc.server",
 		timeout: 1 * time.Second,
 		health:  health.NewServer(),
 	}
@@ -128,8 +120,8 @@ func NewServer(lisFn ListenFunc, opts ...ServerOption) *Server {
 }
 
 func (s *Server) Name() string {
-	if len(s.runName) > 0 {
-		return s.runName
+	if len(s.name) > 0 {
+		return s.name
 	}
 	return "gRPC server"
 }
@@ -147,13 +139,19 @@ func (s *Server) Run(ctx context.Context) error {
 		defer s.mux.Unlock()
 		s.lis = lis
 	}()
-	s.logger(ctx).Infof("[gRPC] server listening on: %s", lis.Addr().String())
+	logger := slog.Ctx(ctx)
+	if logger.Enabled(slog.InfoLevel) {
+		logger.Info(fmt.Sprintf("%s listening on: %s", s.Name(), lis.Addr().String()))
+	}
 	s.health.Resume()
 	return s.Server.Serve(lis)
 }
 
 func (s *Server) Stop(ctx context.Context) error {
-	s.logger(ctx).Info("[gRPC] server stopping")
+	logger := slog.Ctx(ctx)
+	if logger.Enabled(slog.InfoLevel) {
+		logger.Info(fmt.Sprintf("%s stopping", s.Name()))
+	}
 	s.health.Shutdown()
 	ch := make(chan struct{})
 	go func() {
@@ -164,7 +162,9 @@ func (s *Server) Stop(ctx context.Context) error {
 		s.mux.Lock()
 		defer s.mux.Unlock()
 		s.lis = nil
-		s.logger(ctx).Info("[gRPC] server stopped")
+		if logger.Enabled(slog.InfoLevel) {
+			logger.Info("[gRPC] server stopped")
+		}
 	}()
 	select {
 	case <-ch:
@@ -184,11 +184,6 @@ func (s *Server) Address() (net.Addr, error) {
 	return lis.Addr(), nil
 }
 
-func (s *Server) logger(ctx context.Context) logging.Logger {
-	logger := logging.GetFactory().Logger(s.logName)
-	return logging.WithContextField(ctx, logger)
-}
-
 func (s *Server) unaryServerInterceptor() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (resp any, err error) {
 		address, err := s.Address()
@@ -198,14 +193,14 @@ func (s *Server) unaryServerInterceptor() grpc.UnaryServerInterceptor {
 		param := map[string]any{
 			"req": req,
 		}
-		ctx = logging.NewContext(ctx,
-			logging.String("transport", "grpc"),
-			logging.String("actor", "server"),
-			logging.String("address", address.String()),
-			logging.String("method", "unary"),
-			logging.String("api", info.FullMethod),
-			logging.Any("param", param),
-		)
+		ctx = slog.NewContext(ctx, slog.Ctx(ctx).With(
+			slog.String("transport", "grpc"),
+			slog.String("actor", "server"),
+			slog.String("address", address.String()),
+			slog.String("method", "unary"),
+			slog.String("api", info.FullMethod),
+			slog.Any("param", param),
+		))
 		if s.timeout > 0 {
 			var cancel context.CancelFunc
 			ctx, cancel = context.WithTimeout(ctx, s.timeout)
@@ -239,13 +234,13 @@ func (s *Server) streamServerInterceptor() grpc.StreamServerInterceptor {
 			method = "clientStream"
 		}
 		ctx := ss.Context()
-		ctx = logging.NewContext(ctx,
-			logging.String("transport", "grpc"),
-			logging.String("actor", "server"),
-			logging.String("address", address.String()),
-			logging.String("method", method),
-			logging.String("api", info.FullMethod),
-		)
+		ctx = slog.NewContext(ctx, slog.Ctx(ctx).With(
+			slog.String("transport", "grpc"),
+			slog.String("actor", "server"),
+			slog.String("address", address.String()),
+			slog.String("method", method),
+			slog.String("api", info.FullMethod),
+		))
 		return handler(srv, &wrappedStream{ss, ctx})
 	}
 }
